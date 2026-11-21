@@ -1,0 +1,2 @@
+# opcional: só para gerar o extrato .hyper do Tableau
+tableauhyperapi

@@ -1,0 +1,44 @@
+<div class="condicoes-itens" id="condicoes-itens">
+  <h3>Condições de itens</h3>
+  {% if condicoes_itens %}
+  <ul class="condicoes-ativas">
+    {% for item, codigo in condicoes_itens.items() %}
+    <li><strong>{{ item }}</strong> <span>{{ catalogo_itens[codigo].nome }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if equipamentos %}
+  <form class="form-condicoes" method="post" action="{{ url_for('alterar_condicao_item', id=ficha_id) }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <label>Item
+      <select name="item" required>
+        <option value="" disabled selected>Selecione um item</option>
+        {% for item in equipamentos %}
+        <option value="{{ item }}">{{ item }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Condição do item
+      <select name="condicao">
+        <option value="">Sem condição</option>
+        {% for codigo, condicao in catalogo_itens.items() %}
+        <option value="{{ codigo }}">{{ condicao.nome }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button>Salvar condição do item</button>
+  </form>
+  {% else %}
+  <p class="nota">Nenhum equipamento na ficha.</p>
+  {% endif %}
+  <details class="catalogo-condicoes">
+    <summary>Consultar descrições de itens</summary>
+    <dl>
+      {% for condicao in catalogo_itens.values() %}
+      <dt>{{ condicao.nome }}</dt>
+      <dd>{{ condicao.descricao }}</dd>
+      {% endfor %}
+    </dl>
+    <p class="nota">Ameaças de Arton, p. 375.</p>
+  </details>
+</div>

@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block titulo %}Histórico de dados - Fichas T20{% endblock %}
+{% block classe %}larga{% endblock %}
+{% block conteudo %}
+<h1>Histórico de dados</h1>
+<p>
+  <a href="{{ url_for('dashboard_mestre') }}">Ver painel de danos</a> ·
+  <a href="{{ url_for('exportar_excel_mestre') }}">Baixar Excel para Tableau (.xlsx)</a>
+</p>
+<form class="filtros" method="get">
+  <label>Jogador
+    <select name="jogador"><option value="">Todos</option>
+      {% for c in contas %}<option value="{{ c.id }}" {{ "selected" if c.id == jogador }}>{{ c.nome }}</option>{% endfor %}
+    </select></label>
+  <label>Tipo
+    <select name="tipo"><option value="">Todos</option>
+      <option value="pericia" {{ "selected" if tipo == "pericia" }}>Perícias</option>
+      <option value="ataque" {{ "selected" if tipo == "ataque" }}>Ataques</option>
+    </select></label>
+  <button>Filtrar</button>
+</form>
+{% if msgs %}
+<table class="tabela historico">
+  <thead><tr><th>Quando</th><th>Jogador</th><th>Personagem</th><th>Rolagem</th><th>d20</th><th>Bônus</th><th>Total</th><th>Dano</th></tr></thead>
+  <tbody>{% for m in msgs %}
+    <tr class="{{ 'crit' if m.critico }}{{ ' falha' if m.natural == 1 }}">
+      <td><time datetime="{{ m.hora }}">{{ m.hora[:10] }} {{ m.hora[11:16] }}</time></td>
+      <td>{{ m.jogador or "—" }}</td><td>{{ m.ficha }}</td>
+      <td>{{ "Ataque com " if m.tipo == "ataque" }}{{ m.nome }}</td>
+      <td>{{ m.natural }}</td><td>{{ m.bonus|sinal }}</td><td><b>{{ m.total }}</b></td>
+      <td>{% if m.camuflagem and m.camuflagem.falhou %}Falhou por camuflagem{% elif m.dano %}{{ m.dano.total }}{% if m.critico %} (crítico: {{ m.dano.total_critico }}){% endif %}{% else %}—{% endif %}</td>
+    </tr>{% endfor %}
+  </tbody>
+</table>
+{% if proxima %}<p><a href="{{ url_for('historico', jogador=jogador, tipo=tipo, antes=proxima) }}">Ver rolagens mais antigas</a></p>{% endif %}
+{% else %}
+<p class="vazio">Nenhuma rolagem encontrada com esses filtros.</p>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script>
+document.querySelectorAll("time").forEach((t) => {
+  t.textContent = new Date(t.dateTime).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+});
+</script>{% endblock %}

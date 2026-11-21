@@ -1,0 +1,70 @@
+<section class="secao" id="condicoes" aria-labelledby="titulo-condicoes">
+  <h2 id="titulo-condicoes">Condições</h2>
+  {% if ativas %}
+  <ul class="condicoes-ativas">
+    {% for codigo, condicao in catalogo.items() if codigo in ativas %}
+    <li>
+      <strong>{{ condicao.nome }}</strong>
+      <p>{{ condicao.descricao }}</p>
+      <form method="post" action="{{ url_for('alterar_condicao', id=ficha_id) }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="condicao" value="{{ codigo }}">
+        <button class="link" name="acao" value="remover" aria-label="Remover condição {{ condicao.nome }}">Remover</button>
+        {% if codigo in progressao %}<button class="link" name="acao" value="agravar">Agravar para {{ catalogo[progressao[codigo]].nome }}</button>{% endif %}
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="nota">Nenhuma condição ativa.</p>
+  {% endif %}
+
+  {% set implicadas = efeitos.efetivas | reject('in', ativas) | list %}
+  {% if implicadas %}<p class="nota">Também se aplicam {% for codigo in implicadas %}{{ catalogo[codigo].nome }}{{ ', ' if not loop.last }}{% endfor %}.</p>{% endif %}
+
+  {% if ativas|length < catalogo|length %}
+  <form class="form-condicoes" method="post" action="{{ url_for('alterar_condicao', id=ficha_id) }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <label>Condição
+      <select name="condicao" required>
+        <option value="" disabled selected>Selecione uma condição</option>
+        {% for codigo, condicao in catalogo.items() if codigo not in ativas %}
+        <option value="{{ codigo }}">{{ condicao.nome }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button name="acao" value="marcar">Marcar condição</button>
+  </form>
+  {% endif %}
+
+  {% if efeitos.inicio_turno %}
+  <form class="form-condicoes" method="post" action="{{ url_for('inicio_turno', id=ficha_id) }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="turno" value="{{ turno.numero }}">
+    {% if 'em-chamas' in ativas %}
+    <label>RD contra fogo
+      <input type="number" name="rd_fogo" min="0" step="1" value="0">
+    </label>
+    {% endif %}
+    <button>Resolver início do turno</button>
+  </form>
+  {% endif %}
+  {% if turno.mensagens %}
+  <div class="ultimo-turno" role="status">
+    <strong>Último início de turno resolvido</strong>
+    <ul>{% for mensagem in turno.mensagens %}<li>{{ mensagem }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <details class="catalogo-condicoes">
+    <summary>Consultar descrições</summary>
+    <p class="nota">A ficha recalcula os modificadores quando uma condição muda. Para efeitos iguais, vale o mais severo, salvo exceções da regra. Remova a condição quando a duração dela acabar.</p>
+    <dl>
+      {% for condicao in catalogo.values() %}
+      <dt>{{ condicao.nome }}{% if condicao.tipo %} <small>{{ condicao.tipo }}</small>{% endif %}</dt>
+      <dd>{{ condicao.descricao }}</dd>
+      {% endfor %}
+    </dl>
+    <p class="nota">Tormenta20 — Edição Jogo do Ano, pp. 394–395. <a href="https://jamboeditora.com.br/wp-content/uploads/2023/06/Tormenta20-Resumo-de-Regras.pdf">Resumo de Regras da Jambô</a></p>
+  </details>
+</section>

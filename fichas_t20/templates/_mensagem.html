@@ -1,0 +1,13 @@
+<li class="msg {{ m.tipo }}{{ ' crit' if m.critico }}{{ ' falha' if m.natural == 1 }}" data-id="{{ m.id }}">
+  <div class="cab"><b>{{ m.ficha }}{% if usuario.papel == "mestre" and m.jogador %} ({{ m.jogador }}){% endif %}</b><time datetime="{{ m.hora }}">{{ m.hora[11:16] }}</time></div>
+  <div class="corpo">
+    <span class="alvo">{{ "Ataque com " if m.tipo == "ataque" }}{{ m.nome }}</span>
+    <span class="conta">d20 ({{ m.natural }}) {{ m.bonus|sinal }}</span>
+    <strong class="total">{{ m.total }}</strong>
+  </div>
+  {% if m.natural == 20 %}<p class="tag">20 natural</p>{% elif m.natural == 1 %}<p class="tag">1 natural</p>{% endif %}
+  {% if m.camuflagem %}<p class="tag">Camuflagem total · d100 {{ m.camuflagem.resultado }} · {{ 'ataque falhou' if m.camuflagem.falhou else 'ataque pode acertar' }}</p>{% endif %}
+  {% if m.dano %}<p class="dano">Dano {{ m.dano.expr }}: {{ m.dano.dados|join(" + ") }}{% if m.dano.mod %} {{ m.dano.mod|sinal }}{% endif %} = <b>{{ m.dano.total }}</b>
+    {% if m.critico %}<br>Margem de crítico ({{ m.margem }}+): se acertar, dano x{{ m.mult }} = <b>{{ m.dano.total_critico }}</b>{% endif %}</p>
+  {% elif m.critico %}<p class="tag">Margem de crítico ({{ m.margem }}+)</p>{% endif %}
+</li>

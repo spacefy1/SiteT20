@@ -1,0 +1,5 @@
+fichas.db
+secret.key
+__pycache__/
+analytics_danos.db
+danos_t20.*

@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block titulo %}{{ f.nome }} - Fichas T20{% endblock %}
+{% block classe %}larga{% endblock %}
+{% block conteudo %}
+<p class="voltar"><a href="{{ url_for('index') }}">Voltar para as fichas</a></p>
+{% if pode_rolar %}<form id="rolagem" method="post" action="{{ url_for('rolar', id=ficha_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token() }}"></form>{% endif %}
+<article class="ficha">
+  <aside class="lateral">
+    <h1>{{ f.nome }}</h1>
+    <p class="quem">{{ f.raca }} {{ f.classes[0].classe }}{% for c in f.classes[1:] %} e {{ c.classe }}{% endfor %}, nível {{ f.nivel }}</p>
+
+    <div class="recurso pv">
+      <div class="rotulo"><span>Pontos de vida</span><b>{{ f.pv.atual }}/{{ f.pv.max }}</b></div>
+      <div class="barra"><i style="width:{{ f.pv.atual|pct(f.pv.max) }}%"></i></div>
+    </div>
+    <div class="recurso pm">
+      <div class="rotulo"><span>Pontos de mana</span><b>{{ f.pm.atual }}/{{ f.pm.max }}</b></div>
+      <div class="barra"><i style="width:{{ f.pm.atual|pct(f.pm.max) }}%"></i></div>
+      {% if efeitos.custo_pm_adicional %}<p class="nota">Habilidades custam +{{ efeitos.custo_pm_adicional }} PM.</p>{% endif %}
+    </div>
+
+    <dl class="numeros">
+      <div><dt>Defesa</dt><dd>{{ f.defesa if f.defesa is not none else "—" }}</dd></div>
+      <div><dt>Deslocamento</dt><dd>{{ f.deslocamento or "—" }}</dd></div>
+      {% if f.defesa is not none and 'caido' in efeitos.efetivas %}
+      <div><dt>Defesa corpo a corpo</dt><dd>{{ efeitos.defesa_corpo_a_corpo }}</dd></div>
+      <div><dt>Defesa à distância</dt><dd>{{ efeitos.defesa_a_distancia }}</dd></div>
+      {% endif %}
+      {% if efeitos.reducao_dano %}<div><dt>Redução de dano</dt><dd>{{ efeitos.reducao_dano }}</dd></div>{% endif %}
+      <div><dt>CD de magia</dt><dd>{{ f.cd_magia if f.cd_magia is not none else "—" }}</dd></div>
+      <div><dt>Treinamento</dt><dd>{{ f.bonus_treinamento|sinal }}</dd></div>
+    </dl>
+
+    <dl class="dados">
+      <dt>Jogador</dt><dd>{{ f.jogador or "—" }}</dd>
+      <dt>Origem</dt><dd>{{ f.origem or "—" }}</dd>
+      <dt>Divindade</dt><dd>{{ f.deus or "—" }}</dd>
+      <dt>Tamanho</dt><dd>{{ f.tamanho or "—" }}</dd>
+      <dt>Experiência</dt><dd>{{ f.xp }} de {{ f.xp_proximo_nivel }}</dd>
+    </dl>
+  </aside>
+
+  <div class="principal">
+    <ol class="atributos" aria-label="Atributos">
+      {% for sigla, a in f.atributos.items() %}
+      <li title="Valor base {{ a.base }}">
+        <span class="mod{{ ' neg' if a.mod is number and a.mod < 0 }}">{{ a.mod|sinal }}</span>
+        <span class="sigla">{{ sigla }}</span>
+        {% if sigla in efeitos.penalidade_teste_atributo %}<small>Testes {{ (-efeitos.penalidade_teste_atributo[sigla])|sinal }}</small>{% endif %}
+      </li>
+      {% endfor %}
+    </ol>
+
+    {% include "_condicoes.html" %}
+
+    <section class="secao">
+      <h2>Perícias</h2>
+      {% if pode_rolar and condicoes_itens %}
+      <label class="ferramenta">Ferramenta usada no teste
+        <select name="ferramenta" form="rolagem">
+          <option value="">Nenhuma ferramenta afetada</option>
+          {% for item, codigo in condicoes_itens.items() %}
+          <option value="{{ item }}">{{ item }} · {{ catalogo_itens[codigo].nome }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% endif %}
+      <ul class="pericias">
+        {% for p in f.pericias %}
+        <li class="{{ 'treinada' if p.treinada }}">
+          <span class="ponto" title="{{ 'Treinada' if p.treinada else 'Sem treinamento' }}"></span>
+          <span>{{ p.nome }} <small>{{ p.atributo }}{{ " ✠" if p.penalidade_armadura }}{{ " ✯" if p.so_treinada }}</small></span>
+          {% if p.bloqueio %}<b class="indisp" title="{{ p.bloqueio }}">Falha automática</b>{% elif p.total is none %}<b class="indisp" title="Só pode ser usada com treinamento">—</b>{% elif pode_rolar %}<button class="rolar" form="rolagem" name="alvo" value="pericia:{{ loop.index0 }}" aria-label="Rolar {{ p.nome }}">{{ p.total|sinal }}</button>{% else %}<b>{{ p.total|sinal }}</b>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% if efeitos.percepcao_visao_impedida or efeitos.percepcao_audicao_impedida %}
+      <p class="nota">Use Percepção somente para testes que dispensem {{ 'visão e audição' if efeitos.percepcao_visao_impedida and efeitos.percepcao_audicao_impedida else 'visão' if efeitos.percepcao_visao_impedida else 'audição' }}.</p>
+      {% endif %}
+      {% if efeitos.acoes_restritas %}<p class="nota">Role apenas os testes que as condições ativas permitem, como resistências passivas.</p>{% endif %}
+      <p class="nota">{% if pode_rolar %}Clique no bônus de uma perícia para rolar 1d20 + bônus. {% endif %}✠ sofre penalidade de armadura. ✯ só pode ser usada com treinamento.</p>
+    </section>
+
+    <section class="secao">
+      <h2>Combate</h2>
+      {% if efeitos.chance_falha_ataque %}<p class="nota">Camuflagem total · {{ efeitos.chance_falha_ataque }}% de chance de falha nos ataques.</p>{% endif %}
+      {% if f.ataques %}
+      {% if 'agarrado' in efeitos.efetivas %}<p class="nota">Agarrado · confirme pelo botão se o ataque usa uma arma leve.</p>{% endif %}
+      <table class="tabela">
+        <thead><tr><th>Arma</th><th>Teste</th><th>Ataque</th><th>Dano</th><th>Crítico</th><th>Tipo</th><th>Alcance</th><th></th></tr></thead>
+        <tbody>{% for a in f.ataques %}
+          <tr>
+            <td>{{ a.nome }}</td><td>{{ a.teste or "—" }}</td><td>{{ a.bonus|sinal }}</td><td>{{ a.dano or "—" }}</td>
+            <td>{{ a.critico or "—" }}</td><td>{{ a.tipo or "—" }}</td><td>{{ a.alcance or "—" }}</td>
+            <td>
+              {% if a.bloqueio %}{{ a.bloqueio }}
+              {% elif pode_rolar and a.bonus is number %}
+                {% set leve = ':leve' if a.confirmar_arma_leve else '' %}
+                {% if a.redutor_se_corpo_a_corpo %}
+                <button class="rolar" form="rolagem" name="alvo" value="ataque:{{ loop.index0 }}:corpo-a-corpo{{ leve }}">Corpo a corpo{% if leve %} (arma leve){% endif %}</button>
+                <button class="rolar" form="rolagem" name="alvo" value="ataque:{{ loop.index0 }}:distancia{{ leve }}">À distância{% if leve %} (arma leve){% endif %}</button>
+                {% else %}
+                <button class="rolar" form="rolagem" name="alvo" value="ataque:{{ loop.index0 }}{{ leve }}" aria-label="Rolar ataque com {{ a.nome }}{% if leve %} como arma leve{% endif %}">{{ 'Rolar como arma leve' if leve else 'Rolar' }}</button>
+                {% endif %}
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}</tbody>
+      </table>
+      {% endif %}
+      <table class="tabela">
+        <thead><tr><th>Proteção</th><th>Defesa</th><th>Penalidade</th></tr></thead>
+        <tbody>
+          <tr><td>{{ f.armadura.nome or "Sem armadura" }}</td><td>{{ f.armadura.defesa|sinal }}</td><td>{{ f.armadura.penalidade|sinal }}</td></tr>
+          <tr><td>{{ f.escudo.nome or "Sem escudo" }}</td><td>{{ f.escudo.defesa|sinal }}</td><td>{{ f.escudo.penalidade|sinal }}</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="secao">
+      <h2>Equipamento</h2>
+      <div class="recurso carga">
+        <div class="rotulo"><span>Carga em espaços</span><b>{{ f.carga.atual }} de {{ f.carga.max }}</b></div>
+        <div class="barra"><i style="width:{{ f.carga.atual|pct(f.carga.max) }}%"></i></div>
+      </div>
+      {% if f.itens %}
+      <table class="tabela">
+        <thead><tr><th>Item</th><th>Qtde</th><th>Peso</th></tr></thead>
+        <tbody>{% for i in f.itens %}<tr><td>{{ i.nome }}</td><td>{{ i.quantidade or 1 }}</td><td>{{ i.peso if i.peso is not none else "—" }}</td></tr>{% endfor %}</tbody>
+      </table>
+      {% endif %}
+      <p class="nota">Dinheiro: T$ {{ f.dinheiro_t or 0 }}</p>
+      {% include "_condicoes_itens.html" %}
+    </section>
+
+    {% if f.racial_origem or f.classe_geral %}
+    <section class="secao">
+      <h2>Habilidades e poderes</h2>
+      {% for h in f.racial_origem %}
+        {% set nome, resto = h.texto|habilidade %}
+        <p class="habilidade"><span class="fonte">{{ ORIGEM_HABILIDADE.get(h.marcador, h.marcador) }}</span>{% if nome %}<strong>{{ nome }}.</strong> {% endif %}{{ resto }}</p>
+      {% endfor %}
+      {% for h in f.classe_geral %}
+        {% set nome, resto = h.texto|habilidade %}
+        <p class="habilidade"><span class="fonte">Classe, {{ (h.nivel or "")|replace("N", "nível ") }}</span>{% if nome %}<strong>{{ nome }}.</strong> {% endif %}{{ resto }}</p>
+      {% endfor %}
+    </section>
+    {% endif %}
+  </div>
+  <aside class="chat" id="chat">
+    <details open>
+      <summary>{{ "Chat da mesa" if usuario.papel == "mestre" else "Suas rolagens" }}</summary>
+      <p class="erro" id="erro-rolagem" role="alert" hidden></p>
+      <ol class="feed" data-ultimo="{{ ultimo }}" data-url="{{ url_for('chat_mensagens') }}">
+        {% for m in mensagens %}{% include "_mensagem.html" %}{% else %}<li class="vazio-chat">Nenhuma rolagem ainda.{% if pode_rolar %} Clique no bônus de uma perícia ou em Rolar, num ataque.{% endif %}</li>{% endfor %}
+      </ol>
+    </details>
+  </aside>
+</article>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='chat.js') }}" defer></script>{% endblock %}
