@@ -16,7 +16,7 @@ from auth import login_obrigatorio, mestre_obrigatorio, usuario_atual
 from leitor import ler_ficha
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024  # fichas têm ~300 KB
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # fichas têm ~300 KB
 app.config["PERMANENT_SESSION_LIFETIME"] = 7 * 24 * 3600
 auth.init_app(app)
 cli.registrar(app)
