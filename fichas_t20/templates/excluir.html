@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block titulo %}Excluir {{ f.nome }} - Fichas T20{% endblock %}
+{% block conteudo %}
+<p class="voltar"><a href="{{ url_for('editar' if editavel else 'ficha', id=ficha_id) }}">Voltar para {{ 'o editor' if editavel else 'a ficha' }} de {{ f.nome }}</a></p>
+<h1>Excluir a ficha de {{ f.nome }}</h1>
+<div class="zona-perigo confirmar-exclusao">
+  <p>Isto apaga a ficha, as condições marcadas e o turno dela, e não dá para desfazer. As rolagens continuam no chat e no histórico.</p>
+  {% if editavel %}
+  <p><a href="{{ url_for('baixar_planilha', id=ficha_id) }}">Baixe a planilha antes</a> se quiser guardar uma cópia. Ela pode ser enviada de novo depois.</p>
+  {% endif %}
+  {% if erro %}<p class="erro" role="alert" id="erro-nome">{{ erro }}</p>{% endif %}
+  <form method="post" action="{{ url_for('excluir', id=ficha_id) }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <label>Para confirmar, digite o nome do personagem: <b>{{ f.nome }}</b>
+      <input name="nome" autocomplete="off" required{% if erro %} aria-invalid="true" aria-describedby="erro-nome"{% endif %}>
+    </label>
+    <div class="acoes-exclusao">
+      <button class="perigo">Excluir ficha</button>
+      <a href="{{ url_for('editar' if editavel else 'ficha', id=ficha_id) }}">Cancelar</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

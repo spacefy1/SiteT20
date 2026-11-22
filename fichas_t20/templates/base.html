@@ -21,7 +21,12 @@
       <form method="post" action="{{ url_for('sair') }}"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="link">Sair</button></form>
     </nav>{% endif %}
   </header>
-  <main class="{% block classe %}{% endblock %}">{% block conteudo %}{% endblock %}</main>
+  <main class="{% block classe %}{% endblock %}">
+    {% with avisos_flash = get_flashed_messages(with_categories=true) %}{% if avisos_flash %}
+    <div class="avisos">{% for categoria, texto in avisos_flash %}<p class="{{ categoria }}" role="{{ 'alert' if categoria == 'erro' else 'status' }}">{{ texto }}</p>{% endfor %}</div>
+    {% endif %}{% endwith %}
+    {% block conteudo %}{% endblock %}
+  </main>
 {% block scripts %}{% endblock %}
 </body>
 </html>

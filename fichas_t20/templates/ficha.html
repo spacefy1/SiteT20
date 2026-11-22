@@ -1,7 +1,21 @@
 {% extends "base.html" %}
 {% block titulo %}{{ f.nome }} - Fichas T20{% endblock %}
 {% block classe %}larga{% endblock %}
+
+{% macro ajuste(chave, titulo, valor, minimo=none) %}
+<form class="ajuste-recurso" method="post" action="{{ url_for('alterar_recurso', id=ficha_id) }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="recurso" value="{{ chave }}">
+  <input type="number" name="valor" step="1"{% if minimo is not none %} min="{{ minimo }}"{% endif %} value="{{ valor if valor is number else 0 }}" aria-label="{{ titulo }}">
+  <button class="link">Definir</button>
+  <button class="passo" name="delta" value="-1" aria-label="Tirar 1 de {{ titulo }}">−</button>
+  <button class="passo" name="delta" value="1" aria-label="Somar 1 a {{ titulo }}">+</button>
+</form>
+{% endmacro %}
+
 {% block conteudo %}
+{% from "_poder.html" import cartao %}
+{% import "_raca.html" as cartoes_raca %}
 <p class="voltar"><a href="{{ url_for('index') }}">Voltar para as fichas</a></p>
 {% if pode_rolar %}<form id="rolagem" method="post" action="{{ url_for('rolar', id=ficha_id) }}"><input type="hidden" name="csrf" value="{{ csrf_token() }}"></form>{% endif %}
 <article class="ficha">
@@ -9,14 +23,50 @@
     <h1>{{ f.nome }}</h1>
     <p class="quem">{{ f.raca }} {{ f.classes[0].classe }}{% for c in f.classes[1:] %} e {{ c.classe }}{% endfor %}, nível {{ f.nivel }}</p>
 
-    <div class="recurso pv">
-      <div class="rotulo"><span>Pontos de vida</span><b>{{ f.pv.atual }}/{{ f.pv.max }}</b></div>
-      <div class="barra"><i style="width:{{ f.pv.atual|pct(f.pv.max) }}%"></i></div>
+    <div class="acoes-ficha">
+      {% if editavel %}
+      <a class="botao" href="{{ url_for('editar', id=ficha_id) }}">Editar ficha</a>
+      <a class="botao secundario" href="{{ url_for('baixar_planilha', id=ficha_id) }}">Baixar planilha</a>
+      {% else %}
+      <p class="nota">Esta ficha veio de um envio antigo. Reenvie a planilha uma vez para liberar a edição.</p>
+      {% endif %}
+      <a class="botao perigo" href="{{ url_for('excluir', id=ficha_id) }}">Excluir ficha</a>
+      <details class="substituir"{{ ' open' if not editavel }}>
+        <summary>Substituir planilha</summary>
+        <form method="post" action="{{ url_for('substituir_planilha', id=ficha_id) }}" enctype="multipart/form-data">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <input type="file" name="arquivo" accept=".xlsx" aria-label="Nova planilha da ficha (.xlsx)" required>
+          <button>Enviar e substituir</button>
+          <p class="nota">Mantém esta ficha, com condições, turno e rolagens.</p>
+        </form>
+      </details>
     </div>
-    <div class="recurso pm">
-      <div class="rotulo"><span>Pontos de mana</span><b>{{ f.pm.atual }}/{{ f.pm.max }}</b></div>
-      <div class="barra"><i style="width:{{ f.pm.atual|pct(f.pm.max) }}%"></i></div>
-      {% if efeitos.custo_pm_adicional %}<p class="nota">Habilidades custam +{{ efeitos.custo_pm_adicional }} PM.</p>{% endif %}
+
+    <div id="recursos">
+      <div class="recurso pv">
+        <div class="rotulo"><span>Pontos de vida</span><b>{{ f.pv.atual }}/{{ f.pv.max }}</b></div>
+        <div class="barra"><i style="width:{{ f.pv.atual|pct(f.pv.max) }}%"></i></div>
+        {{ ajuste("pv", "Pontos de vida atuais", f.pv.atual) }}
+      </div>
+      {% set temp = f.pv.temporario if f.pv.temporario is number else 0 %}
+      {% if temp > 0 %}
+      <div class="recurso pv-temp">
+        <div class="rotulo"><span>PV temporários</span><b>+{{ temp }}</b></div>
+        <div class="barra"><i style="width:{{ temp|pct(f.pv.max) }}%"></i></div>
+        {{ ajuste("pv_temp", "PV temporários", temp, 0) }}
+      </div>
+      {% else %}
+      <details class="pv-temp-vazio">
+        <summary>+ PV temporário</summary>
+        {{ ajuste("pv_temp", "PV temporários", 0, 0) }}
+      </details>
+      {% endif %}
+      <div class="recurso pm">
+        <div class="rotulo"><span>Pontos de mana</span><b>{{ f.pm.atual }}/{{ f.pm.max }}</b></div>
+        <div class="barra"><i style="width:{{ f.pm.atual|pct(f.pm.max) }}%"></i></div>
+        {{ ajuste("pm", "Pontos de mana atuais", f.pm.atual) }}
+        {% if efeitos.custo_pm_adicional %}<p class="nota">Habilidades custam +{{ efeitos.custo_pm_adicional }} PM.</p>{% endif %}
+      </div>
     </div>
 
     <dl class="numeros">
@@ -65,12 +115,21 @@
         </select>
       </label>
       {% endif %}
-      <ul class="pericias">
+      {# Outros (buffs) edita Ajustes!B{linha+21} direto daqui; quem vê a ficha é o dono ou o mestre #}
+      {% set edita_outros = editavel %}
+      <ul class="pericias"{% if edita_outros %} data-csrf="{{ csrf_token() }}"{% endif %}>
         {% for p in f.pericias %}
-        <li class="{{ 'treinada' if p.treinada }}">
-          <span class="ponto" title="{{ 'Treinada' if p.treinada else 'Sem treinamento' }}"></span>
-          <span>{{ p.nome }} <small>{{ p.atributo }}{{ " ✠" if p.penalidade_armadura }}{{ " ✯" if p.so_treinada }}</small></span>
-          {% if p.bloqueio %}<b class="indisp" title="{{ p.bloqueio }}">Falha automática</b>{% elif p.total is none %}<b class="indisp" title="Só pode ser usada com treinamento">—</b>{% elif pode_rolar %}<button class="rolar" form="rolagem" name="alvo" value="pericia:{{ loop.index0 }}" aria-label="Rolar {{ p.nome }}">{{ p.total|sinal }}</button>{% else %}<b>{{ p.total|sinal }}</b>{% endif %}
+        <li class="{{ 'treinada' if p.treinada }}{{ ' pela-raca' if p.treinada_pela_raca }}"{% if p.linha %} data-linha="{{ p.linha }}"{% endif %}>
+          <span class="ponto" title="{{ 'Treinada pela raça' if p.treinada_pela_raca else 'Treinada' if p.treinada else 'Sem treinamento' }}"></span>
+          <span>{{ p.nome }} <small>{{ p.atributo }}{{ " ✠" if p.penalidade_armadura }}{{ " ✯" if p.so_treinada }}{{ " · raça" if p.treinada_pela_raca }}</small>
+            <small class="dica-poderes"{{ ' hidden' if not p.poderes }}>{{ (p.poderes|sinal ~ " de poderes") if p.poderes }}</small></span>
+          {% if edita_outros and p.linha %}
+          <input class="outros" type="number" inputmode="numeric" min="-99" max="99" step="1" placeholder="0"
+                 value="{{ p.outros or '' }}" data-salvo="{{ p.outros or '' }}" title="Outros: bônus adicionais (buffs)"
+                 aria-label="Outros em {{ p.nome }}" data-url="{{ url_for('alterar_outros', id=ficha_id, linha=p.linha) }}">
+          {% else %}<span class="outros-texto" title="Outros: bônus adicionais (buffs)">{{ p.outros|sinal if p.outros }}</span>{% endif %}
+          {% if p.bloqueio %}<b class="indisp" title="{{ p.bloqueio }}" data-total>Falha automática</b>{% elif p.total is none %}<b class="indisp" title="Só pode ser usada com treinamento" data-total>—</b>{% elif pode_rolar %}<button class="rolar" form="rolagem" name="alvo" value="pericia:{{ loop.index0 }}" aria-label="Rolar {{ p.nome }}" data-total>{{ p.total|sinal }}</button>{% else %}<b data-total>{{ p.total|sinal }}</b>{% endif %}
+          {% if edita_outros %}<span class="erro-outros" role="alert" hidden></span>{% endif %}
         </li>
         {% endfor %}
       </ul>
@@ -78,7 +137,7 @@
       <p class="nota">Use Percepção somente para testes que dispensem {{ 'visão e audição' if efeitos.percepcao_visao_impedida and efeitos.percepcao_audicao_impedida else 'visão' if efeitos.percepcao_visao_impedida else 'audição' }}.</p>
       {% endif %}
       {% if efeitos.acoes_restritas %}<p class="nota">Role apenas os testes que as condições ativas permitem, como resistências passivas.</p>{% endif %}
-      <p class="nota">{% if pode_rolar %}Clique no bônus de uma perícia para rolar 1d20 + bônus. {% endif %}✠ sofre penalidade de armadura. ✯ só pode ser usada com treinamento.</p>
+      <p class="nota">{% if pode_rolar %}Clique no bônus de uma perícia para rolar 1d20 + bônus. {% endif %}✠ sofre penalidade de armadura. ✯ só pode ser usada com treinamento. "raça": treinamento dado pela raça. Outros: bônus adicionais (buffs), já somados ao total.</p>
     </section>
 
     <section class="secao">
@@ -133,17 +192,18 @@
       {% include "_condicoes_itens.html" %}
     </section>
 
-    {% if f.racial_origem or f.classe_geral %}
-    <section class="secao">
+    {% set poderes = f.poderes or [] %}
+    {% set raca = f.raca_detalhe if f.raca_detalhe and f.raca_detalhe.nome else none %}
+    {% if raca or f.racial_origem or poderes %}
+    <section class="secao" id="habilidades">
       <h2>Habilidades e poderes</h2>
+      {% if raca %}<h3 class="sub">Raça</h3>{{ cartoes_raca.cartoes(raca) }}{% endif %}
       {% for h in f.racial_origem %}
-        {% set nome, resto = h.texto|habilidade %}
-        <p class="habilidade"><span class="fonte">{{ ORIGEM_HABILIDADE.get(h.marcador, h.marcador) }}</span>{% if nome %}<strong>{{ nome }}.</strong> {% endif %}{{ resto }}</p>
+        {% set nome, resto = h.texto|string|habilidade %}
+        {% set fonte = h|fonte_habilidade %}
+        <p class="habilidade">{% if fonte %}<span class="fonte">{{ fonte }}</span>{% endif %}{% if nome %}<strong>{{ nome }}.</strong> {% endif %}{{ resto }}</p>
       {% endfor %}
-      {% for h in f.classe_geral %}
-        {% set nome, resto = h.texto|habilidade %}
-        <p class="habilidade"><span class="fonte">Classe, {{ (h.nivel or "")|replace("N", "nível ") }}</span>{% if nome %}<strong>{{ nome }}.</strong> {% endif %}{{ resto }}</p>
-      {% endfor %}
+      {% if poderes %}<h3 class="sub">Poderes</h3><div class="poderes">{% for p in poderes %}{{ cartao(p) }}{% endfor %}</div>{% endif %}
     </section>
     {% endif %}
   </div>
@@ -158,4 +218,5 @@
   </aside>
 </article>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='chat.js') }}" defer></script>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='chat.js') }}" defer></script>
+<script src="{{ url_for('static', filename='pericias.js') }}" defer></script>{% endblock %}

@@ -1,0 +1,36 @@
+{# Cartões da raça (aba Raça), no mesmo estilo dos cartões de poder #}
+{% from "_poder.html" import regra %}
+
+{% macro cabecalho(r) %}
+<article class="poder raca-cab">
+  <p class="poder-cab"><strong>{{ r.nome }}</strong></p>
+  {% if r.fonte %}<p class="meta">{{ r.fonte }}</p>{% endif %}
+  {% if r.resumo %}<p>{{ r.resumo }}</p>{% endif %}
+  {% if r.modificadores %}<p class="modificadores">{{ r.modificadores }}</p>{% endif %}
+  {% if r.aviso %}<p class="aviso-poder{{ ' problema' if r.aviso is aviso_raca_problema }}">{{ r.aviso }}</p>{% endif %}
+</article>
+{% endmacro %}
+
+{% macro traco(t) %}
+<article class="poder traco">
+  <p class="poder-cab"><strong>{{ t.nome }}</strong></p>
+  {% if t.texto %}{{ regra(t.texto) }}{% endif %}
+</article>
+{% endmacro %}
+
+{% macro escolha(e) %}
+{%- set classe = e.situacao|situacao_classe %}
+<article class="poder escolha-raca{{ ' ' ~ classe if classe }}">
+  <p class="poder-cab"><strong>{{ e.rotulo or "Escolha" }}:</strong> {{ e.escolha or "(a escolher)" }}</p>
+  {% if classe in ("pendente", "problema") %}<p class="aviso-poder problema">{{ e.situacao }}</p>{% endif %}
+  {% if e.descricao %}<p class="regra descricao-escolha">{{ e.descricao }}</p>{% endif %}
+</article>
+{% endmacro %}
+
+{% macro cartoes(r) %}
+<div class="poderes">
+  {{ cabecalho(r) }}
+  {% for t in r.tracos %}{{ traco(t) }}{% endfor %}
+  {% for e in r.escolhas %}{{ escolha(e) }}{% endfor %}
+</div>
+{% endmacro %}

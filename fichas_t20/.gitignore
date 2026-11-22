@@ -3,3 +3,13 @@ secret.key
 __pycache__/
 analytics_danos.db
 danos_t20.*
+# Ambiente virtual e cache de testes
+.venv/
+.pytest_cache/
+
+# cache compilado do modelo (gerado por: flask --app app preparar-modelo)
+modelo/*.pkl
+modelo/*.tmp*
+
+# Backups do banco (flask --app app recalcular-fichas)
+backups/

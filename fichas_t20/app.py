@@ -1,27 +1,33 @@
 """Site de fichas T20.  Rodar:  flask --app app run --debug"""
+import re
 import time
+import unicodedata
 from io import BytesIO
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash
 
 import analytics
 import auth
+import campos
 import cli
 import condicoes
 import dados
 import db
 import efeitos
+import modelo
+import motor
 from auth import login_obrigatorio, mestre_obrigatorio, usuario_atual
-from leitor import ler_ficha
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # fichas têm ~300 KB
+app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # a planilha modelo tem cerca de 6 MB
 app.config["PERMANENT_SESSION_LIFETIME"] = 7 * 24 * 3600
 auth.init_app(app)
 cli.registrar(app)
 
 ORIGEM_HABILIDADE = {"R": "Raça", "D": "Divindade", "O": "Origem"}
+FONTE_POR_LINHA = {39: "Raça", 40: "Origem"}  # PJ!AP39 mostra a raça e AP40 a origem
+REGRA_LONGA = 320                             # na ficha, regras maiores ficam recolhidas
 
 
 @app.template_filter("sinal")
@@ -44,7 +50,40 @@ def habilidade(texto):
     return None, texto
 
 
-app.jinja_env.globals["ORIGEM_HABILIDADE"] = ORIGEM_HABILIDADE
+@app.template_filter("fonte_habilidade")
+def fonte_habilidade(h):
+    """Rótulo de uma linha de RACIAL & ORIGEM; None quando não há (o modelo não imprime nada)."""
+    return FONTE_POR_LINHA.get(h.get("linha")) or ORIGEM_HABILIDADE.get(h.get("marcador"), h.get("marcador"))
+
+
+@app.template_test("aviso_problema")
+def aviso_problema(aviso):
+    """Avisos da aba Poderes escolhidos que pedem atenção ("Confira demais requisitos" é só lembrete)."""
+    return isinstance(aviso, str) and aviso.startswith(("Nível insuficiente", "Repetido"))
+
+
+SITUACAO = {"Escolhida": "ok", "A escolher": "pendente"}  # Raça!C11:C27; o resto (Revise, Repetida, Ignorada) é problema
+
+
+@app.template_filter("situacao_classe")
+def situacao_classe(situacao):
+    return SITUACAO.get(situacao, "problema") if situacao else ""
+
+
+@app.template_test("aviso_raca_problema")
+def aviso_raca_problema(aviso):
+    """Raça!A7 pede atenção quando há escolha pendente ou falta a raça/herança."""
+    return isinstance(aviso, str) and aviso.startswith(("Há escolhas", "Escolha a herança", "Escolha uma raça"))
+
+
+@app.template_filter("ancora")
+def ancora(titulo):
+    """'Perícias' -> 'pericias' (id das seções do editor)."""
+    sem_acento = unicodedata.normalize("NFKD", titulo.casefold()).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "-", sem_acento).strip("-")
+
+
+app.jinja_env.globals.update(REGRA_LONGA=REGRA_LONGA)
 
 
 FALHAS = {}  # login -> (erros seguidos, hora do primeiro erro); bloqueia 5 min após 5 erros
@@ -100,29 +139,63 @@ def index():
     return _inicio()
 
 
+def _dono_escolhido(u):
+    """O mestre pode criar ou enviar uma ficha em nome de um jogador."""
+    if u["papel"] == "mestre" and request.form.get("dono", type=int):
+        escolhido = db.usuario(id=request.form.get("dono", type=int))
+        if escolhido:
+            return escolhido["id"]
+    return u["id"]
+
+
+def _ler_upload():
+    """Arquivo do formulário -> (entradas, avisos). ValueError traz a mensagem para quem enviou."""
+    arquivo = request.files.get("arquivo")
+    if not arquivo or not arquivo.filename.lower().endswith(".xlsx"):
+        raise ValueError("Escolha um arquivo .xlsx exportado da planilha de ficha.")
+    return campos.entradas_da_planilha(BytesIO(arquivo.read()))
+
+
+def _avisar(avisos):
+    for aviso in avisos:
+        flash(aviso, "aviso")
+
+
 @app.post("/enviar")
 @login_obrigatorio
 def enviar():
     u = usuario_atual()
-    arquivo = request.files.get("arquivo")
-    if not arquivo or not arquivo.filename.lower().endswith(".xlsx"):
-        return _inicio("Escolha um arquivo .xlsx exportado da planilha de ficha.")
     try:
-        ficha = ler_ficha(BytesIO(arquivo.read()))
-    except Exception as e:  # planilha sem a aba PJ, sem nome, corrompida...
+        entradas, avisos = _ler_upload()
+        ficha = motor.calcular(entradas)
+    except ValueError as e:  # outro modelo, sem nome, arquivo corrompido...
         return _inicio(str(e))
-    dono = u["id"]
-    if u["papel"] == "mestre" and request.form.get("dono", type=int):  # o mestre envia em nome de um jogador
-        escolhido = db.usuario(id=request.form.get("dono", type=int))
-        dono = escolhido["id"] if escolhido else dono
-    return redirect(url_for("ficha", id=db.salvar(ficha, dono)))
+    _avisar(avisos)
+    return redirect(url_for("ficha", id=db.salvar(ficha, _dono_escolhido(u), entradas)))
+
+
+@app.post("/criar")
+@login_obrigatorio
+def criar_ficha():
+    """Ficha em branco: só o nome, o resto se preenche no editor."""
+    try:
+        nome = campos.validar(campos.CAMPOS["PJ!B3"], request.form.get("nome", ""))
+    except campos.ErroCampo as e:
+        return _inicio(str(e))
+    if not nome:
+        return _inicio("Dê um nome ao personagem para criar a ficha.")
+    entradas = {"PJ!B3": nome}
+    f = motor.calcular(entradas)
+    db.encher_recursos(f, entradas)  # PV e PM atuais não entram na conta: dispensa recalcular
+    id = db.salvar(f, _dono_escolhido(usuario_atual()), entradas)
+    return redirect(url_for("editar", id=id))
 
 
 @app.errorhandler(413)
 def grande_demais(_):
     if not usuario_atual():
         return "Arquivo grande demais.", 413
-    return _inicio("O arquivo passa de 5 MB. Fichas normais têm cerca de 300 KB.")
+    return _inicio("O arquivo passa de 10 MB. A planilha modelo tem cerca de 6 MB.")
 
 
 def _ficha_visivel(id):
@@ -156,7 +229,7 @@ def ficha(id):
                            catalogo=condicoes.PERSONAGEM, ativas=ativas, turno=turno,
                            efeitos=f["efeitos_condicoes"], progressao=efeitos.PROGRESSAO,
                            catalogo_itens=condicoes.ITENS, condicoes_itens=itens,
-                           equipamentos=_nomes_equipamento(f))
+                           equipamentos=_nomes_equipamento(f), editavel=db.entradas(id) is not None)
 
 
 @app.get("/ficha/<int:id>.json")
@@ -165,6 +238,242 @@ def ficha_json(id):
     _ficha_visivel(id)
     f, ativas, itens, _ = _ficha_com_efeitos(id)
     return jsonify({**f, "condicoes": sorted(ativas), "condicoes_itens": itens})
+
+
+# ---- edição da ficha (dono ou mestre; _ficha_visivel já esconde a ficha dos outros jogadores)
+FICHA_ANTIGA = "Esta ficha veio de um envio antigo. Reenvie a planilha uma vez para liberar a edição."
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _valor_exibido(v):
+    """Valor de uma célula como aparece no formulário."""
+    if v is None:
+        return ""
+    if isinstance(v, float):
+        return str(v).replace(".", ",")
+    return str(v)
+
+
+app.jinja_env.filters["campo_valor"] = _valor_exibido
+
+
+def _contexto_editor(f, entradas, enviados):
+    def valor(c):
+        return _valor_exibido(campos.valor_atual(entradas, c.endereco))
+
+    def mostrado(c):
+        return enviados[c.endereco] if c.endereco in enviados else valor(c)
+
+    def preenchida(linha):
+        vazios = ("", "0", "-", campos.AUTOMATICO)
+        return any(c and mostrado(c) not in vazios for c in linha)
+
+    salvos = {p["linha"]: p for p in f.get("poderes", [])}
+
+    def poder(c):
+        """Descrição da opção na linha (do BD CATÁLOGO). O aviso depende do recálculo: só o da opção salva."""
+        opcao = mostrado(c)
+        info = modelo.carregar().catalogo.get(opcao)
+        if not info:
+            return None
+        salvo = salvos.get(int(modelo.separar(c.endereco)[1][1:]), {})
+        return {**info, "aviso": salvo.get("aviso") if salvo.get("opcao") == opcao else None}
+
+    datalists = {campos.lista_id(c): campos.opcoes(c) for c in campos.CAMPOS.values()
+                 if c.tipo == campos.LISTA and campos.modo(c) == "datalist"}
+    return dict(campos=campos, secoes=campos.SECOES, valor=valor, mostrado=mostrado, preenchida=preenchida,
+                poder=poder, datalists=datalists, AUTOMATICO=campos.AUTOMATICO, siglas=campos.SIGLAS,
+                raca=_contexto_raca(f, entradas, mostrado))
+
+
+def _contexto_raca(f, entradas, mostrado):
+    """Seção Raça do editor: o resumo vem do último recálculo; as listas, do motor (com cache por raça)."""
+    detalhe = f.get("raca_detalhe") or {}
+    salvas = {e["linha"]: e for e in detalhe.get("escolhas", [])}
+    opcoes = motor.opcoes_raciais(entradas)
+    linhas = []
+    for endereco in campos.ESCOLHAS_RACIAIS:
+        l = int(modelo.separar(endereco)[1][1:])
+        info, salva, atual = opcoes.get(endereco), salvas.get(l, {}), mostrado(campos.CAMPOS[endereco])
+        if info is None and not atual:
+            continue  # linha sem escolha nesta raça
+        linhas.append({"campo": campos.CAMPOS[endereco], "info": info, "situacao": salva.get("situacao"),
+                       "descricao": salva.get("descricao"), "rotulo": (info or {}).get("rotulo") or salva.get("rotulo")})
+    return {"detalhe": detalhe, "linhas": linhas, "moreau": mostrado(campos.CAMPOS["PJ!S2"]) == "Moreau"}
+
+
+def _validar_escolhas(entradas, mudancas, erros):
+    """Escolhas raciais alteradas precisam estar na lista calculada para a raça (a que o editor mostrou)."""
+    alteradas = {e: v for e, v in mudancas.items()
+                 if e in campos.ESCOLHAS_RACIAIS and not campos.mesmo(v, entradas.get(e))}
+    if not alteradas or campos.raca_mudou(entradas, mudancas):
+        return  # raça nova: as escolhas antigas são apagadas ao salvar
+    opcoes = motor.opcoes_raciais(entradas)
+    for endereco, valor in alteradas.items():
+        try:
+            mudancas[endereco] = campos.validar_escolha(campos.CAMPOS[endereco], valor, opcoes.get(endereco))
+        except campos.ErroCampo as e:
+            erros[endereco] = str(e)
+
+
+def _linhas_de_escolha(f):
+    return [e["linha"] for e in (f.get("raca_detalhe") or {}).get("escolhas", []) if e.get("rotulo")]
+
+
+@app.route("/ficha/<int:id>/editar", methods=["GET", "POST"])
+@login_obrigatorio
+def editar(id):
+    f, _, _ = _ficha_visivel(id)
+    entradas = db.entradas(id)
+    if entradas is None:
+        flash(FICHA_ANTIGA, "aviso")
+        return redirect(url_for("ficha", id=id))
+    erros, enviados = {}, {}
+    if request.method == "POST":
+        mudancas, erros = campos.ler_formulario(request.form)
+        if "PJ!B3" in mudancas and not mudancas["PJ!B3"]:
+            erros["PJ!B3"] = "O personagem precisa de um nome."
+        _validar_escolhas(entradas, mudancas, erros)
+        if not erros:
+            try:
+                novo = f
+                # Mexeu na raça: o editor reabre na seção Raça, então as listas já saem deste recálculo
+                mexeu_na_raca = any(e in campos.CHAVE_RACA for e in mudancas)
+                if mudancas:
+                    novo = db.atualizar_ficha(id, lambda atuais: campos.aplicar(atuais, mudancas),
+                                              lambda e: motor.calcular(e, guardar_opcoes=mexeu_na_raca),
+                                              acompanhar_recursos=True)
+            except (ValueError, RuntimeError) as e:
+                erros["geral"] = str(e)
+            else:
+                if campos.raca_mudou(entradas, mudancas) or _linhas_de_escolha(novo) != _linhas_de_escolha(f):
+                    # Raça nova (ou escolha que libera outra): volta ao editor com as escolhas dela
+                    flash("Ficha salva e recalculada. Confira as escolhas da raça.", "ok")
+                    return redirect(url_for("editar", id=id) + "#secao-raca", code=303)
+                flash("Ficha salva e recalculada." if mudancas else "Nada mudou na ficha.", "ok")
+                return redirect(url_for("ficha", id=id), code=303)
+        enviados = {k: request.form.getlist(k)[-1] for k in request.form if k != "csrf"}
+    return render_template("editar.html", f=f, ficha_id=id, erros=erros,
+                           **_contexto_editor(f, entradas, enviados)), (400 if erros else 200)
+
+
+@app.get("/poderes/descricao")
+@login_obrigatorio
+def descricao_poder():
+    """Descrição de uma opção do BD CATÁLOGO, para o editor mostrar assim que o jogador escolhe."""
+    info = modelo.carregar().catalogo.get(request.args.get("opcao", "").strip())
+    if not info:
+        return "", 204
+    return render_template("_poder.html", p=info)
+
+
+@app.route("/ficha/<int:id>/excluir", methods=["GET", "POST"])
+@login_obrigatorio
+def excluir(id):
+    """Confirmação numa página própria: é preciso digitar o nome do personagem."""
+    f, _, _ = _ficha_visivel(id)
+    erro = None
+    if request.method == "POST":
+        nome = f.get("nome") or ""
+        if request.form.get("nome", "").strip().casefold() == nome.strip().casefold():
+            db.excluir_ficha(id)
+            flash(f"Ficha {nome} excluída.", "ok")
+            return redirect(url_for("index"), code=303)
+        erro = "O nome digitado não confere com o do personagem. Nada foi excluído."
+    return render_template("excluir.html", f=f, ficha_id=id, erro=erro,
+                           editavel=db.entradas(id) is not None), (400 if erro else 200)
+
+
+@app.get("/opcoes/<lista>")
+@login_obrigatorio
+def buscar_opcoes(lista):
+    """Sugestões para listas enormes (o catálogo de poderes tem 8,6 mil opções)."""
+    c = campos.campo_da_lista(lista)
+    if c is None:
+        abort(404)
+    return jsonify(campos.buscar(c, request.args.get("q", "")))
+
+
+@app.post("/ficha/<int:id>/recurso")
+@login_obrigatorio
+def alterar_recurso(id):
+    """PV, PM ou PV temporário pelos botões da ficha. Não recalcula a planilha."""
+    _ficha_visivel(id)
+    recurso = request.form.get("recurso")
+    if recurso not in db.RECURSOS:
+        abort(400, "Recurso inválido.")
+    r = db.RECURSOS[recurso]
+    try:
+        if request.form.get("delta"):
+            delta = campos.validar(campos.Campo("delta", "Variação", campos.INTEIRO), request.form["delta"])
+            db.definir_recurso(id, recurso, delta=delta or 0)
+        else:
+            valor = campos.validar(campos.CAMPOS[r.celula], request.form.get("valor", ""))
+            if valor is None:
+                raise campos.ErroCampo("Digite um número.")
+            db.definir_recurso(id, recurso, valor=valor)
+    except campos.ErroCampo as e:
+        flash(f"{r.nome}: {e}", "erro")
+    return redirect(url_for("ficha", id=id) + "#recursos", code=303)
+
+
+def _pericia_json(p):
+    """Uma perícia como a página mostra (o total já vem com as condições aplicadas)."""
+    texto = "Falha automática" if p.get("bloqueio") else "—" if p.get("total") is None else sinal(p["total"])
+    return {"linha": p.get("linha"), "total": p.get("total"), "texto": texto, "outros": p.get("outros") or 0,
+            "poderes": p.get("poderes") or 0, "poderes_texto": f"{sinal(p['poderes'])} de poderes" if p.get("poderes") else ""}
+
+
+@app.post("/ficha/<int:id>/pericia/<int:linha>/outros")
+@login_obrigatorio
+def alterar_outros(id, linha):
+    """Campo Outros (buffs) de uma perícia na página da ficha: grava Ajustes!B{linha+21} e recalcula.
+
+    Responde JSON: {"pericias": [...]} com os totais novos, ou {"erro": "..."} e a ficha intacta.
+    """
+    _ficha_visivel(id)
+    c = campos.CAMPOS.get(campos.outros_da_pericia(linha)) if 8 <= linha <= 36 else None
+    if c is None:
+        abort(404)
+    if db.entradas(id) is None:
+        return jsonify(erro=FICHA_ANTIGA), 400
+    try:
+        valor = campos.validar(c, request.form.get("valor", "")) or 0  # vazio vale 0
+        db.atualizar_ficha(id, lambda atuais: campos.aplicar(atuais, {c.endereco: valor}), motor.calcular)
+    except campos.ErroCampo as e:
+        return jsonify(erro=str(e)), 400
+    except (ValueError, RuntimeError) as e:
+        return jsonify(erro=str(e)), 409
+    f, _, _, _ = _ficha_com_efeitos(id)
+    return jsonify(pericias=[_pericia_json(p) for p in f["pericias"]])
+
+
+@app.post("/ficha/<int:id>/planilha")
+@login_obrigatorio
+def substituir_planilha(id):
+    """Troca a planilha da ficha mantendo o id (condições, turno e rolagens continuam)."""
+    _ficha_visivel(id)
+    try:
+        entradas, avisos = _ler_upload()
+        db.atualizar_ficha(id, lambda _: entradas, motor.calcular)
+    except (ValueError, RuntimeError) as e:
+        flash(str(e), "erro")
+    else:
+        _avisar(avisos)
+        flash("Planilha substituída.", "ok")
+    return redirect(url_for("ficha", id=id), code=303)
+
+
+@app.get("/ficha/<int:id>/planilha.xlsx")
+@login_obrigatorio
+def baixar_planilha(id):
+    f, _, _ = _ficha_visivel(id)
+    entradas = db.entradas(id)
+    if entradas is None:
+        flash(FICHA_ANTIGA, "aviso")
+        return redirect(url_for("ficha", id=id))
+    nome = re.sub(r"[^\w\- ]+", "", f.get("nome") or "").strip() or "ficha"
+    return send_file(modelo.gerar_planilha(entradas), as_attachment=True, download_name=f"{nome}.xlsx", mimetype=XLSX)
 
 
 @app.post("/ficha/<int:id>/condicoes")

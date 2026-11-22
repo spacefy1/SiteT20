@@ -1,3 +1,3 @@
-from .t20 import ler_ficha
+from .t20 import celulas_lidas, endereco, ler_ficha, ler_planilha, normalizar
 
-__all__ = ["ler_ficha"]
+__all__ = ["celulas_lidas", "endereco", "ler_ficha", "ler_planilha", "normalizar"]

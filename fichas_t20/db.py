@@ -3,6 +3,7 @@ import json
 import sqlite3
 from contextlib import closing, contextmanager
 from pathlib import Path
+from typing import NamedTuple
 
 CAMINHO = Path(__file__).with_name("fichas.db")
 
@@ -31,9 +32,10 @@ def _conectar():
         CREATE TABLE IF NOT EXISTS ficha_turnos (
             ficha_id INTEGER PRIMARY KEY REFERENCES fichas(id), numero INTEGER NOT NULL,
             mensagens TEXT NOT NULL, confusao INTEGER);""")
-        for tabela, coluna in (("fichas", "dono_id"), ("rolagens", "usuario_id")):  # bancos anteriores aos usuários
+        for tabela, coluna, tipo in (("fichas", "dono_id", "INTEGER"), ("rolagens", "usuario_id", "INTEGER"),  # usuários
+                                     ("fichas", "entradas", "TEXT"), ("fichas", "atualizada_em", "TEXT")):  # editor
             if coluna not in {c["name"] for c in con.execute(f"PRAGMA table_info({tabela})")}:
-                con.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} INTEGER")
+                con.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo}")
         yield con
 
 
@@ -81,12 +83,17 @@ def listar(u):
     return fichas
 
 
-def salvar(f, dono_id):
+def _json(valor):
+    return json.dumps(valor, ensure_ascii=False)
+
+
+def salvar(f, dono_id, entradas=None):
     with _conectar() as con:
         return con.execute(
-            "INSERT INTO fichas (nome, raca, classe, nivel, dados, dono_id) VALUES (?,?,?,?,?,?)",
-            (f["nome"], f["raca"], f["classes"][0]["classe"], f["nivel"],
-             json.dumps(f, ensure_ascii=False), dono_id)).lastrowid
+            "INSERT INTO fichas (nome, raca, classe, nivel, dados, dono_id, entradas, atualizada_em) "
+            "VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+            (f["nome"], f["raca"], f["classes"][0]["classe"], f["nivel"], _json(f), dono_id,
+             None if entradas is None else _json(entradas))).lastrowid
 
 
 def obter(id):
@@ -94,6 +101,138 @@ def obter(id):
     with _conectar() as con:
         l = con.execute("SELECT dados, dono_id FROM fichas WHERE id = ?", (id,)).fetchone()
     return (json.loads(l["dados"]), l["dono_id"]) if l else (None, None)
+
+
+def _entradas(con, ficha_id):
+    l = con.execute("SELECT entradas FROM fichas WHERE id = ?", (ficha_id,)).fetchone()
+    return json.loads(l["entradas"]) if l and l["entradas"] is not None else None
+
+
+def backup():
+    """Cópia consistente do banco em backups/ (ao lado do banco); devolve o caminho."""
+    from datetime import datetime
+    pasta = Path(CAMINHO).parent / "backups"
+    pasta.mkdir(exist_ok=True)
+    destino = pasta / f"{Path(CAMINHO).stem}_{datetime.now():%Y%m%d-%H%M%S}.db"
+    with closing(sqlite3.connect(CAMINHO)) as origem, closing(sqlite3.connect(destino)) as copia:
+        origem.backup(copia)
+    return destino
+
+
+def fichas_editaveis():
+    """Ids das fichas com edição liberada (as que guardam entradas)."""
+    with _conectar() as con:
+        return [l["id"] for l in con.execute("SELECT id FROM fichas WHERE entradas IS NOT NULL ORDER BY id")]
+
+
+def entradas(ficha_id):
+    """Células editadas da ficha ({"PJ!B3": "Kael", ...}), ou None em fichas antigas (só `dados`)."""
+    with _conectar() as con:
+        return _entradas(con, ficha_id)
+
+
+class Recurso(NamedTuple):
+    nome: str
+    celula: str
+    grupo: str           # dados[grupo][chave]
+    chave: str
+    minimo: int | None
+
+
+# Só alimentam a aba BD.LIVE da planilha: mudam direto em `dados`, sem recálculo
+RECURSOS = {
+    "pv": Recurso("PV", "PJ!S14", "pv", "atual", None),            # PV negativo existe em T20
+    "pm": Recurso("PM", "PJ!AA14", "pm", "atual", None),
+    "pv_temp": Recurso("PV temporário", "PJ!X14", "pv", "temporario", 0),
+}
+ACOMPANHAM_MAXIMO = ("pv", "pm")
+
+
+def _numero(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _gravar_recurso(f, ent, r, valor):
+    f[r.grupo][r.chave] = valor
+    if ent is not None:
+        if valor == 0:
+            ent.pop(r.celula, None)  # 0 (ou vazio) é o valor do modelo
+        else:
+            ent[r.celula] = valor
+
+
+def encher_recursos(f, ent):
+    """Ficha nova: PV e PM atuais começam no máximo."""
+    for chave in ACOMPANHAM_MAXIMO:
+        r = RECURSOS[chave]
+        if _numero(f[r.grupo].get("max")):
+            _gravar_recurso(f, ent, r, f[r.grupo]["max"])
+
+
+def _acompanhar_maximo(antes, lidas, f, novas):
+    """Depois de recalcular: quem estava cheio fica cheio; acima do novo máximo desce até ele."""
+    for chave in ACOMPANHAM_MAXIMO:
+        r = RECURSOS[chave]
+        if novas.get(r.celula, 0) != lidas.get(r.celula, 0):
+            continue  # o próprio envio mudou o valor atual
+        atual, maximo, novo_max = antes[r.grupo].get("atual"), antes[r.grupo].get("max"), f[r.grupo].get("max")
+        if _numero(atual) and _numero(maximo) and _numero(novo_max):
+            _gravar_recurso(f, novas, r, novo_max if atual == maximo else min(atual, novo_max))
+
+
+def atualizar_ficha(ficha_id, alterar, calcular, acompanhar_recursos=False, tentativas=3):
+    """Lê as entradas, aplica `alterar(entradas) -> novas`, recalcula e grava entradas + dados.
+
+    Com `acompanhar_recursos` (o editor), PV e PM atuais seguem o novo máximo.
+    O recálculo (cerca de 2 s) roda fora da trava de escrita; dentro do BEGIN IMMEDIATE a
+    ficha é lida de novo e, se alguém mudou as entradas nesse meio tempo (PV rápido,
+    início de turno), a alteração é refeita sobre a versão nova.
+    """
+    for _ in range(tentativas):
+        with _conectar() as con:
+            l = con.execute("SELECT dados, entradas FROM fichas WHERE id = ?", (ficha_id,)).fetchone()
+        antes, lidas = json.loads(l["dados"]), json.loads(l["entradas"] or "{}")
+        novas = alterar(dict(lidas))
+        f = calcular(novas)
+        if acompanhar_recursos:
+            _acompanhar_maximo(antes, lidas, f, novas)
+        with _conectar() as con:
+            con.execute("BEGIN IMMEDIATE")
+            if (_entradas(con, ficha_id) or {}) != lidas:
+                continue
+            con.execute("UPDATE fichas SET nome = ?, raca = ?, classe = ?, nivel = ?, dados = ?, entradas = ?, "
+                        "atualizada_em = CURRENT_TIMESTAMP WHERE id = ?",
+                        (f["nome"], f["raca"], f["classes"][0]["classe"], f["nivel"], _json(f), _json(novas),
+                         ficha_id))
+            return f
+    raise RuntimeError("A ficha foi alterada ao mesmo tempo por outra pessoa. Tente salvar de novo.")
+
+
+def definir_recurso(ficha_id, recurso, valor=None, delta=0):
+    """PV, PM ou PV temporário: grava a entrada e `dados` direto, sem recalcular a planilha."""
+    r = RECURSOS[recurso]
+    with _conectar() as con:
+        con.execute("BEGIN IMMEDIATE")
+        l = con.execute("SELECT dados, entradas FROM fichas WHERE id = ?", (ficha_id,)).fetchone()
+        f = json.loads(l["dados"])
+        atual = f[r.grupo].get(r.chave)
+        novo = valor if valor is not None else (atual if _numero(atual) else 0) + delta
+        if r.minimo is not None:
+            novo = max(novo, r.minimo)
+        ent = json.loads(l["entradas"]) if l["entradas"] is not None else None
+        _gravar_recurso(f, ent, r, novo)
+        con.execute("UPDATE fichas SET dados = ?, entradas = ?, atualizada_em = CURRENT_TIMESTAMP WHERE id = ?",
+                    (_json(f), None if ent is None else _json(ent), ficha_id))
+    return novo
+
+
+def excluir_ficha(ficha_id):
+    """Apaga a ficha e o estado dela numa transação. As rolagens ficam: guardam o nome do personagem."""
+    with _conectar() as con:
+        con.execute("BEGIN IMMEDIATE")
+        for tabela in ("ficha_condicoes", "ficha_condicoes_itens", "ficha_turnos"):
+            con.execute(f"DELETE FROM {tabela} WHERE ficha_id = ?", (ficha_id,))
+        return con.execute("DELETE FROM fichas WHERE id = ?", (ficha_id,)).rowcount
 
 
 def _condicoes_da_ficha(con, ficha_id):
@@ -168,8 +307,10 @@ def resolver_turno(ficha_id, numero_anterior, calcular):
         r = calcular(f, ativas)
         if not r.mensagens:
             return
-        if r.pv is not None:
-            con.execute("UPDATE fichas SET dados = json_set(dados, '$.pv.atual', ?) WHERE id = ?", (r.pv, ficha_id))
+        if r.pv is not None:  # entradas também, senão o próximo recálculo desfaz o dano
+            con.execute("UPDATE fichas SET dados = json_set(dados, '$.pv.atual', ?), "
+                        "entradas = CASE WHEN entradas IS NULL THEN NULL "
+                        "ELSE json_set(entradas, '$.\"PJ!S14\"', ?) END WHERE id = ?", (r.pv, r.pv, ficha_id))
         for codigo in r.remover:
             _remover_condicao(con, ficha_id, codigo)
         for codigo in r.adicionar:

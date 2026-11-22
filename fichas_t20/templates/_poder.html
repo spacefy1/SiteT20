@@ -1,0 +1,31 @@
+{# Um poder como na aba "Poderes escolhidos". No editor a regra fica sempre recolhida e não há aplicação. #}
+
+{# Texto de regra: inteiro quando é curto, recolhido em <details> quando é longo (ou sempre, no editor) #}
+{% macro regra(texto, sempre_recolhida=False) %}
+{%- set texto = texto|string %}
+{%- if sempre_recolhida or texto|length > REGRA_LONGA %}
+<details class="regra">
+  <summary>{% if sempre_recolhida %}Regra{% else %}<span class="previa">{{ texto|truncate(200) }}</span> <span class="ler">Ler a regra completa</span>{% endif %}</summary>
+  <p>{{ texto }}</p>
+</details>
+{%- else %}<p class="regra">{{ texto }}</p>{% endif %}
+{%- endmacro %}
+
+{% macro cartao(p, editor=False) %}
+{%- set inativo = p.ativo is sameas false %}
+<article class="poder{{ ' inativo' if inativo }}">
+  <p class="poder-cab"><strong>{{ p.nome or p.opcao }}</strong>{% if inativo %} <span class="selo">Inativo</span>{% endif %}</p>
+  <p class="meta">
+    {%- if p.livro %}{{ p.livro }}{% if p.pagina is not none %}, p. {{ p.pagina }}{% endif %}{% endif %}
+    {%- if p.nivel_minimo is number %}{{ " · " if p.livro }}nível mínimo {{ p.nivel_minimo }}{% endif %}
+    {%- if p.nivel_na_ficha and not editor %} · escolhido no {{ p.nivel_na_ficha|replace("N", "nível ") }}{% endif %}
+  </p>
+  {% if p.pre_requisitos %}<p class="prereq"><b>Pré-requisitos:</b> {{ p.pre_requisitos }}</p>{% endif %}
+  {% if p.regra %}{{ regra(p.regra, editor) }}{% endif %}
+  {% if p.aviso %}<p class="aviso-poder{{ ' problema' if p.aviso is aviso_problema }}">{{ p.aviso }}</p>
+  {% elif editor %}<p class="nota">O aviso (nível, repetição) aparece depois de salvar.</p>{% endif %}
+  {% if p.aplicacao and not editor %}<p class="nota">{{ p.aplicacao }}</p>{% endif %}
+</article>
+{% endmacro %}
+{# Renderizado sozinho (rota /poderes/descricao): a descrição para o editor #}
+{% if p is defined %}{{ cartao(p, editor=True) }}{% endif %}

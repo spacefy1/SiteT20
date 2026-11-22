@@ -2,3 +2,4 @@ flask
 pandas
 numpy
 openpyxl
+pycel==1.0b30

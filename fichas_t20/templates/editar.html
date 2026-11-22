@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block titulo %}Editar {{ f.nome }} - Fichas T20{% endblock %}
+{% block classe %}larga{% endblock %}
+
+{% macro entrada(c) %}
+{%- set orig = valor(c) %}{% set v = mostrado(c) %}{% set erro = erros.get(c.endereco) %}
+{%- set extra = ('aria-invalid="true" aria-describedby="erro-' ~ c.id ~ '"')|safe if erro else '' %}
+{%- if c.tipo == "marca" %}
+  <input type="hidden" name="{{ c.endereco }}" value="0">
+  <input type="checkbox" id="{{ c.id }}" name="{{ c.endereco }}" value="1" data-orig="{{ '1' if orig == '1' else '0' }}" {{ 'checked' if v == '1' }} aria-label="{{ c.rotulo }}" {{ extra }}>
+{%- elif c.tipo == "lista" and campos.modo(c) == "select" %}
+  <select id="{{ c.id }}" name="{{ c.endereco }}" data-orig="{{ orig }}" aria-label="{{ c.rotulo }}" {{ extra }}>
+    {% if c.automatico %}<option value="{{ AUTOMATICO }}">Automático</option>{% else %}<option value="">(vazio)</option>{% endif %}
+    {% for o in campos.opcoes(c) %}{% set texto = o|campo_valor %}<option{{ ' selected' if texto == v }}>{{ texto }}</option>{% endfor %}
+  </select>
+{%- elif c.tipo == "lista" %}
+  {% set busca = campos.modo(c) == "busca" %}
+  <input type="text" id="{{ c.id }}" name="{{ c.endereco }}" value="{{ v }}" data-orig="{{ orig }}" aria-label="{{ c.rotulo }}"
+         list="{{ campos.lista_id(c) }}" autocomplete="off"{% if busca %} data-busca="{{ url_for('buscar_opcoes', lista=campos.lista_id(c)) }}" placeholder="Digite para buscar"{% endif %} {{ extra }}>
+{%- elif c.tipo == "inteiro" %}
+  <input type="number" step="1" id="{{ c.id }}" name="{{ c.endereco }}" value="{{ v }}" data-orig="{{ orig }}"{% if c.minimo is not none %} min="{{ c.minimo|int }}"{% endif %} aria-label="{{ c.rotulo }}" {{ extra }}>
+{%- elif c.tipo == "decimal" %}
+  <input type="text" inputmode="decimal" id="{{ c.id }}" name="{{ c.endereco }}" value="{{ v }}" data-orig="{{ orig }}" aria-label="{{ c.rotulo }}" {{ extra }}>
+{%- else %}
+  <input type="text" maxlength="{{ campos.LIMITE_TEXTO }}" id="{{ c.id }}" name="{{ c.endereco }}" value="{{ v }}" data-orig="{{ orig }}" aria-label="{{ c.rotulo }}" {{ extra }}>
+{%- endif %}
+  {% if erro %}<span class="erro-campo" id="erro-{{ c.id }}">{{ erro }}</span>{% endif %}
+{% endmacro %}
+
+{% from "_poder.html" import cartao %}
+
+{% macro tabela(bloco, linhas) %}
+{%- set poderes = bloco.especial == "poderes" %}
+<table class="tabela editor{{ ' poderes-editor' if poderes }}"{% if poderes %} data-descricao="{{ url_for('descricao_poder') }}"{% endif %}>
+  <thead><tr><th></th>{% for col in bloco.colunas %}<th>{{ col }}</th>{% endfor %}{% if poderes %}<th>Descrição</th>{% endif %}</tr></thead>
+  <tbody>{% for rotulo, linha in linhas %}
+    <tr><th scope="row">{{ rotulo }}</th>{% for c in linha %}<td>{% if c %}{{ entrada(c) }}{% endif %}</td>{% endfor %}
+      {%- if poderes %}{% set p = poder(linha[1]) %}<td class="descricao-poder" aria-live="polite">{% if p %}{{ cartao(p, editor=True) }}{% endif %}</td>{% endif %}</tr>
+  {% endfor %}</tbody>
+</table>
+{% endmacro %}
+
+{# Só o valor base é do jogador; o final sai da fórmula BD!B31:B36 (base + BD TRAÇOS!A5:F5 + Ajustes 6 e 7) #}
+{% macro atributos(bloco) %}
+{%- set base = bloco.linhas[0][1] %}
+<table class="tabela editor atributos-editor">
+  <thead><tr><th></th>{% for s in bloco.colunas %}<th>{{ s }}</th>{% endfor %}</tr></thead>
+  <tbody>
+    <tr><th scope="row">Valor base</th>{% for c in base %}<td>{{ entrada(c) }}</td>{% endfor %}</tr>
+    <tr class="final"><th scope="row">Valor final</th>
+      {%- for s in bloco.colunas %}<td><output>{{ f.atributos[s].mod|sinal }}</output></td>{% endfor %}</tr>
+  </tbody>
+</table>
+<p class="nota">O valor final é o do último recálculo: soma a base, o bônus da raça (com as escolhas da seção Raça) e os ajustes da seção Ajustes. Mudanças na raça e nas escolhas entram depois de salvar.</p>
+{% endmacro %}
+
+{# Uma escolha racial: lista calculada para a raça da ficha, ou texto livre #}
+{% macro escolha(l) %}
+{%- set c, info = l.campo, l.info %}{% set orig = valor(c) %}{% set v = mostrado(c) %}{% set erro = erros.get(c.endereco) %}
+{%- set extra = ('aria-invalid="true" aria-describedby="erro-' ~ c.id ~ '"')|safe if erro else '' %}
+{%- if info and not info.livre %}
+  <select id="{{ c.id }}" name="{{ c.endereco }}" data-orig="{{ orig }}" aria-label="{{ l.rotulo or c.rotulo }}" {{ extra }}>
+    <option value="">(a escolher)</option>
+    {% if v and v not in info.opcoes %}<option selected value="{{ v }}">{{ v }} (fora da lista)</option>{% endif %}
+    {% for o in info.opcoes %}<option{{ ' selected' if o == v }}>{{ o }}</option>{% endfor %}
+  </select>
+{%- else %}
+  <input type="text" maxlength="{{ campos.LIMITE_TEXTO }}" id="{{ c.id }}" name="{{ c.endereco }}" value="{{ v }}" data-orig="{{ orig }}" aria-label="{{ l.rotulo or c.rotulo }}" {{ extra }}>
+{%- endif %}
+  {% if erro %}<span class="erro-campo" id="erro-{{ c.id }}">{{ erro }}</span>{% endif %}
+{% endmacro %}
+
+{# Seção Raça: raça e herança, o resumo do último recálculo e uma linha por escolha #}
+{% macro secao_raca(bloco) %}
+{%- set s2, b4 = bloco.linhas[0][1] %}{% set d = raca.detalhe %}
+<div class="grade-campos">
+  <label for="{{ s2.id }}"><span>{{ s2.rotulo }}</span>{{ entrada(s2) }}</label>
+  <label for="{{ b4.id }}" class="heranca"{{ ' hidden' if not raca.moreau }}><span>{{ b4.rotulo }}</span>{{ entrada(b4) }}</label>
+</div>
+<p class="nota troca-raca" hidden>Ao salvar, a herança e as escolhas da raça anterior são apagadas e o editor volta aqui com as escolhas da nova raça.</p>
+{% if d.nome %}
+<div class="resumo-raca">
+  <p><strong>{{ d.nome }}</strong>{% if d.fonte %} <span class="meta">{{ d.fonte }}</span>{% endif %}</p>
+  {% if d.resumo %}<p class="meta">{{ d.resumo }}</p>{% endif %}
+  {% if d.modificadores %}<p>{{ d.modificadores }}</p>{% endif %}
+</div>
+{% endif %}
+{% if d.aviso %}<p class="aviso-poder{{ ' problema' if d.aviso is aviso_raca_problema }}">{{ d.aviso }}</p>{% endif %}
+{% if raca.linhas %}
+<table class="tabela editor escolhas-raca">
+  <thead><tr><th>Escolha</th><th>Sua escolha</th><th>Situação</th><th>Regra e descrição</th></tr></thead>
+  <tbody>{% for l in raca.linhas %}
+    <tr><th scope="row">{{ l.rotulo or "Sem escolha nesta raça" }}</th>
+      <td>{{ escolha(l) }}</td>
+      <td>{% if l.situacao %}<span class="situacao {{ l.situacao|situacao_classe }}">{{ l.situacao }}</span>{% endif %}</td>
+      <td class="descricao-escolha">{{ l.descricao or "" }}</td></tr>
+  {% endfor %}</tbody>
+</table>
+<p class="nota">A situação e a descrição são do último recálculo e se atualizam ao salvar.</p>
+{% endif %}
+{% endmacro %}
+
+{% block conteudo %}
+<p class="voltar"><a href="{{ url_for('ficha', id=ficha_id) }}">Voltar para a ficha de {{ f.nome }}</a></p>
+<h1>Editar {{ f.nome }}</h1>
+<p class="nota">Os valores calculados (defesa, perícias, PV máximo, ataques, carga) saem da planilha modelo ao salvar. Campos "Automático" usam a fórmula da planilha; escolha um valor para sobrescrever.</p>
+
+<nav class="indice-secoes" aria-label="Seções do editor">
+  {% for titulo, _ in secoes %}<a href="#secao-{{ titulo|ancora }}">{{ titulo }}</a>{% endfor %}
+</nav>
+
+{% if erros %}
+<div class="erro" role="alert">
+  <p>{{ erros.geral if erros.geral else "Corrija os campos marcados. Nada foi salvo." }}</p>
+  <ul>{% for endereco, msg in erros.items() if endereco != "geral" %}
+    {% set c = campos.CAMPOS.get(endereco) %}
+    <li>{% if c %}<a href="#{{ c.id }}">{{ c.rotulo }}</a>{% else %}{{ endereco }}{% endif %}: {{ msg }}</li>
+  {% endfor %}</ul>
+</div>
+{% endif %}
+
+<form id="editor" class="editor" method="post" action="{{ url_for('editar', id=ficha_id) }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  {% for titulo, blocos in secoes %}
+  <section class="secao" id="secao-{{ titulo|ancora }}">
+    <h2>{{ titulo }}</h2>
+    {% for bloco in blocos %}
+      {% if bloco.titulo %}<h3>{{ bloco.titulo }}</h3>{% endif %}
+      {% if bloco.especial == "raca" %}
+        {{ secao_raca(bloco) }}
+      {% elif bloco.especial == "atributos" %}
+        {{ atributos(bloco) }}
+      {% elif bloco.colunas %}
+        {% set ns = namespace(visiveis=[], recolhidas=[]) %}
+        {% for linha in bloco.linhas %}
+          {% if bloco.visiveis is none or loop.index0 < bloco.visiveis or preenchida(linha[1]) %}
+            {% set ns.visiveis = ns.visiveis + [linha] %}
+          {% else %}
+            {% set ns.recolhidas = ns.recolhidas + [linha] %}
+          {% endif %}
+        {% endfor %}
+        {{ tabela(bloco, ns.visiveis) }}
+        {% if ns.recolhidas %}
+        <details class="mais-linhas"><summary>Mais {{ ns.recolhidas|length }} linhas vazias</summary>{{ tabela(bloco, ns.recolhidas) }}</details>
+        {% endif %}
+      {% else %}
+        <div class="grade-campos">
+          {% for c in bloco.linhas[0][1] %}
+          <label class="{{ 'marca' if c.tipo == 'marca' }}" for="{{ c.id }}"><span>{{ c.rotulo }}</span>{{ entrada(c) }}</label>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endfor %}
+  </section>
+  {% endfor %}
+  {% for id, opcoes in datalists.items() %}
+  <datalist id="{{ id }}">{% for o in opcoes %}<option value="{{ o|campo_valor }}">{% endfor %}</datalist>
+  {% endfor %}
+  {% for c in campos.CAMPOS.values() if c.tipo == "lista" and campos.modo(c) == "busca" %}
+    {% if loop.first %}<datalist id="{{ campos.lista_id(c) }}"></datalist>{% endif %}
+  {% endfor %}
+  <div class="salvar-fixo">
+    <button>Salvar e recalcular</button>
+    <a href="{{ url_for('ficha', id=ficha_id) }}">Cancelar</a>
+    <span class="nota">Só os campos alterados são enviados.</span>
+  </div>
+</form>
+
+<section class="secao zona-perigo" aria-labelledby="titulo-perigo">
+  <h2 id="titulo-perigo">Zona de perigo</h2>
+  <p>Excluir a ficha apaga também as condições e o turno dela. As rolagens continuam no chat e no histórico.</p>
+  <a class="botao perigo" href="{{ url_for('excluir', id=ficha_id) }}">Excluir ficha</a>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='editor.js') }}" defer></script>{% endblock %}
